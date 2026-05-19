@@ -1,0 +1,90 @@
+name: Build Override APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      gradle_task:
+        description: Gradle task to run
+        required: false
+        default: app:assembleMetaDebug
+  push:
+    branches:
+      - main
+      - override-yaml
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Checkout submodules if needed
+        run: git submodule update --init --recursive --force
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: '1.26'
+
+      - name: Apply Go runtime patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$(go env GOROOT)"
+          for p in "$GITHUB_WORKSPACE"/.github/patch/*.patch; do
+            patch --verbose -p 1 < "$p"
+          done
+
+      - name: Cache Go modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Update CA bundle for mihomo core
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates
+          sudo update-ca-certificates
+          if [ -d core/src/foss/golang/clash/component/ca ]; then
+            cp -f /etc/ssl/certs/ca-certificates.crt core/src/foss/golang/clash/component/ca/ca-certificates.crt
+          fi
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          TASK="${{ inputs.gradle_task }}"
+          if [ -z "$TASK" ]; then
+            TASK="app:assembleMetaDebug"
+          fi
+          ./gradlew --no-daemon "$TASK"
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmfa-override-apk
+          path: |
+            app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
